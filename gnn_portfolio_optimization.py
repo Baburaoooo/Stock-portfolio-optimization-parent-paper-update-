@@ -68,8 +68,7 @@ class SimpleGNN:
         dims = [input_dim] + [hidden_dim] * (num_layers - 1) + [output_dim]
         
         for i in range(len(dims) - 1):
-            # Xavier initialization
-            limit = np.sqrt(6.0 / (dims[i] + dims[i+1]))
+            limit = np.sqrt(6.0 / (dims[i] + dims[i+1]))  # Xavier initialization
             W = np.random.uniform(-limit, limit, (dims[i], dims[i+1]))
             self.weights.append(W)
         
@@ -94,28 +93,22 @@ class SimpleGNN:
         num_stocks = features.shape[0]
         adj = np.zeros((num_stocks, num_stocks))
         
-        # Normalize features for cosine similarity
         norms = np.linalg.norm(features, axis=1, keepdims=True)
-        norms[norms == 0] = 1  # Avoid division by zero
+        norms[norms == 0] = 1
         normalized_features = features / norms
-        
-        # Compute cosine similarity
         similarity = np.dot(normalized_features, normalized_features.T)
         
         for i in range(num_stocks):
             for j in range(i + 1, num_stocks):
-                # Connect if same category OR high feature similarity
                 same_category = category[i] == category[j]
                 high_similarity = similarity[i, j] > threshold
-                
                 if same_category or high_similarity:
                     adj[i, j] = 1
                     adj[j, i] = 1
         
-        # Add self-loops
-        adj += np.eye(num_stocks)
+        adj += np.eye(num_stocks)  # Self-loops
         
-        # Normalize adjacency matrix (symmetric normalization)
+        # Symmetric normalization: D^(-1/2) * A * D^(-1/2)
         degree = np.sum(adj, axis=1)
         degree_inv_sqrt = np.power(degree, -0.5)
         degree_inv_sqrt[np.isinf(degree_inv_sqrt)] = 0
@@ -142,13 +135,8 @@ class SimpleGNN:
         h = features
         
         for i, W in enumerate(self.weights):
-            # Message passing: aggregate neighbor features
-            h = adj @ h
-            
-            # Linear transformation
-            h = h @ W
-            
-            # Apply ReLU activation (except for last layer)
+            h = adj @ h  # Aggregate neighbor features
+            h = h @ W    # Linear transformation
             if i < len(self.weights) - 1:
                 h = self.relu(h)
         
@@ -165,17 +153,15 @@ class SimpleGNN:
         Returns:
             Enhanced scores (num_stocks x 3)
         """
-        # Compute embedding-based score (mean of embedding dimensions)
         embedding_score = np.mean(embeddings, axis=1)
         
-        # Normalize to 0-1 range
+        # Min-max normalization
         if embedding_score.max() != embedding_score.min():
             embedding_score = (embedding_score - embedding_score.min()) / (embedding_score.max() - embedding_score.min())
         else:
             embedding_score = np.ones_like(embedding_score) * 0.5
         
-        # Combine with original scores (weighted average)
-        # GNN contribution: 20%, Original: 80%
+        # Combine: 80% original + 20% GNN
         gnn_weight = 0.2
         enhanced_scores = original_scores.copy()
         
@@ -197,38 +183,33 @@ def prepare_gnn_features(stocks_df):
         categories: Category array
         original_scores: Original normalized scores
     """
-    # Extract normalized features
     feature_cols = [
         'normalized_fitness_score',
         'normalized_percent_change_from_instrinsic_value',
         'normalized_Rev_Gr_Next_Y'
     ]
-    
-    # Fill NaN with 0
     features = stocks_df[feature_cols].fillna(0).values
     
-    # Add additional features for GNN
-    # Stock price (normalized)
+    # Additional normalized features
     prices = stocks_df['Stock Price'].values.astype(float)
     prices_norm = (prices - prices.min()) / (prices.max() - prices.min() + 1e-8)
     
-    # Combined fitness score (normalized)
     fitness = stocks_df['Combined_Fitness_Score'].fillna(0).values.astype(float)
     fitness_norm = (fitness - fitness.min()) / (fitness.max() - fitness.min() + 1e-8)
     
-    # Category as one-hot (3 categories)
+    # Category one-hot encoding
     categories = stocks_df['Category'].values.astype(int)
     category_onehot = np.zeros((len(categories), 3))
     for i, cat in enumerate(categories):
         if 1 <= cat <= 3:
             category_onehot[i, cat - 1] = 1
     
-    # Combine all features
+    # Feature matrix: [3 normalized + 1 price + 1 fitness + 3 category] = 8 dims
     all_features = np.column_stack([
-        features,           # 3 features
-        prices_norm.reshape(-1, 1),        # 1 feature
-        fitness_norm.reshape(-1, 1),       # 1 feature
-        category_onehot     # 3 features
+        features,
+        prices_norm.reshape(-1, 1),
+        fitness_norm.reshape(-1, 1),
+        category_onehot
     ])
     
     return all_features, categories, features
@@ -327,7 +308,6 @@ def run_gnn_enhanced_shlo(stocks_df, portfolio_size, large_cap_count, mid_cap_co
     
     budget_allocator = BudgetAllocation(total_budget, upper_budget_limit, lower_budget_limit)
     
-    # Initialize population
     population = []
     for _ in range(pop_size):
         node = Node()
@@ -337,14 +317,13 @@ def run_gnn_enhanced_shlo(stocks_df, portfolio_size, large_cap_count, mid_cap_co
             node.sol[i] = 1
         population.append(node)
     
-    # Initialize knowledge databases
-    skd = [[0] * num_stocks for _ in range(10)]
+    skd = [[0] * num_stocks for _ in range(10)]  # Social Knowledge Database
     for k in range(1, 10):
         selected = random.sample(range(num_stocks), portfolio_size)
         for i in selected:
             skd[k][i] = 1
     
-    for node in population:
+    for node in population:  # Individual Knowledge Database
         for k in range(1, 6):
             node.ikd[k] = [0] * num_stocks
             selected = random.sample(range(num_stocks), portfolio_size)
@@ -393,7 +372,6 @@ def run_gnn_enhanced_shlo(stocks_df, portfolio_size, large_cap_count, mid_cap_co
             )
             if success:
                 total_budget_used += budget_used
-                # Use GNN-enhanced scores
                 obj_value = (
                     weight_fitness * stock['gnn_fitness_score'] +
                     weight_percent_change * stock['gnn_percent_change'] +
@@ -404,7 +382,6 @@ def run_gnn_enhanced_shlo(stocks_df, portfolio_size, large_cap_count, mid_cap_co
         
         return total_obj
     
-    # Evolution loop
     best_fitness_history = []
     
     for epoch in range(epochs):
@@ -430,7 +407,6 @@ def run_gnn_enhanced_shlo(stocks_df, portfolio_size, large_cap_count, mid_cap_co
                 else:
                     node.sol[j] = skd[random.randint(1, 9)][j]
             
-            # Ensure portfolio size
             while sum(node.sol) != portfolio_size:
                 if sum(node.sol) > portfolio_size:
                     indices = [i for i, x in enumerate(node.sol) if x == 1]
@@ -456,7 +432,6 @@ def run_gnn_enhanced_shlo(stocks_df, portfolio_size, large_cap_count, mid_cap_co
         if epoch % 20 == 0:
             print(f"  Epoch {epoch}, Best Fitness: {population[0].fitness:.4f}")
     
-    # Get best solution
     best_node = population[0]
     selected_indices = [i for i, x in enumerate(best_node.sol) if x == 1]
     
@@ -525,7 +500,6 @@ def run_gnn_enhanced_hill_climbing(stocks_df, portfolio_size, large_cap_count, m
     num_stocks = len(list_data)
     small_cap_count = portfolio_size - large_cap_count - mid_cap_count
     
-    # Column indices
     COL_STOCK_ID = 0
     COL_SYMBOL = 1
     COL_NAME = 2
@@ -613,11 +587,9 @@ def run_gnn_enhanced_hill_climbing(stocks_df, portfolio_size, large_cap_count, m
     best_obj = current_obj
     best_budget = current_budget
     
-    # Hill climbing iterations
     print("\n[Step 5] Running Hill Climbing optimization...")
     
     for i in range(iterations):
-        # Generate neighbor by swapping 2 stocks
         neighbor = copy.deepcopy(current_portfolio)
         neighbor_qty = current_quantities.copy()
         
@@ -625,7 +597,6 @@ def run_gnn_enhanced_hill_climbing(stocks_df, portfolio_size, large_cap_count, m
         cat1 = neighbor[idx1][COL_CATEGORY]
         cat2 = neighbor[idx2][COL_CATEGORY]
         
-        # Find replacement stocks with same categories
         candidates1 = [s for s in list_data if s[COL_CATEGORY] == cat1 and s not in neighbor]
         candidates2 = [s for s in list_data if s[COL_CATEGORY] == cat2 and s not in neighbor]
         
@@ -663,7 +634,6 @@ def run_gnn_enhanced_hill_climbing(stocks_df, portfolio_size, large_cap_count, m
         if i % 200 == 0:
             print(f"  Iteration {i}, Best Objective: {best_obj:.4f}")
     
-    # Format output
     portfolio = []
     for i, stock in enumerate(best_portfolio):
         portfolio.append([
@@ -702,7 +672,6 @@ def run_baseline_shlo(stocks_df, portfolio_size, large_cap_count, mid_cap_count,
     
     budget_allocator = BudgetAllocation(total_budget, upper_budget_limit, lower_budget_limit)
     
-    # Initialize population
     population = []
     for _ in range(pop_size):
         node = Node()
@@ -767,7 +736,6 @@ def run_baseline_shlo(stocks_df, portfolio_size, large_cap_count, mid_cap_count,
             )
             if success:
                 total_budget_used += budget_used
-                # Use original scores
                 fitness_score = stock['normalized_fitness_score'] if pd.notna(stock['normalized_fitness_score']) else 0
                 percent_change = stock['normalized_percent_change_from_instrinsic_value'] if pd.notna(stock['normalized_percent_change_from_instrinsic_value']) else 0
                 rev_growth = stock['normalized_Rev_Gr_Next_Y'] if pd.notna(stock['normalized_Rev_Gr_Next_Y']) else 0
@@ -782,7 +750,6 @@ def run_baseline_shlo(stocks_df, portfolio_size, large_cap_count, mid_cap_count,
         
         return total_obj
     
-    # Evolution loop
     for epoch in range(epochs):
         iteration = epoch / epochs
         probabilities = [0.4, 0.3, 0.3]
@@ -851,7 +818,6 @@ def run_baseline_shlo(stocks_df, portfolio_size, large_cap_count, mid_cap_count,
         ])
     
     time_taken = time.time() - start_time
-    
     print(f"\n[Baseline SHLO] Completed in {time_taken:.2f} seconds")
     
     return portfolio, best_node.fitness, total_budget_used, time_taken
@@ -872,21 +838,12 @@ def run_baseline_hill_climbing(stocks_df, portfolio_size, large_cap_count, mid_c
     num_stocks = len(list_data)
     small_cap_count = portfolio_size - large_cap_count - mid_cap_count
     
-    COL_STOCK_ID = 0
-    COL_SYMBOL = 1
-    COL_NAME = 2
-    COL_PRICE = 3
-    COL_CATEGORY = 4
-    COL_LOWER = 9
-    COL_UPPER = 10
-    COL_FITNESS = 11
-    COL_PERCENT = 12
-    COL_REV = 13
+    COL_STOCK_ID, COL_SYMBOL, COL_NAME, COL_PRICE, COL_CATEGORY = 0, 1, 2, 3, 4
+    COL_LOWER, COL_UPPER, COL_FITNESS, COL_PERCENT, COL_REV = 9, 10, 11, 12, 13
     
     def calculate_budget(stock_price, min_qty, max_qty):
         upper_budget = int(total_budget * upper_budget_limit)
         lower_budget = int(total_budget * lower_budget_limit)
-        
         for qty in range(int(min_qty), int(max_qty) + 1):
             budget_used = stock_price * qty
             if lower_budget <= budget_used <= upper_budget:
@@ -902,7 +859,6 @@ def run_baseline_hill_climbing(stocks_df, portfolio_size, large_cap_count, mid_c
     def calculate_objective(selected, quantities):
         total_obj = 0
         total_used = 0
-        
         for i, stock in enumerate(selected):
             qty = quantities[i]
             budget_used = stock[COL_PRICE] * qty
@@ -919,10 +875,8 @@ def run_baseline_hill_climbing(stocks_df, portfolio_size, large_cap_count, mid_c
                 weight_normalized_budget * (total_used / total_budget)
             )
             total_obj += obj_value
-        
         return total_obj, total_used
     
-    # Generate initial solution
     print("\n  Generating initial solution...")
     max_attempts = 10000
     attempt = 0
@@ -964,14 +918,12 @@ def run_baseline_hill_climbing(stocks_df, portfolio_size, large_cap_count, mid_c
     best_budget = current_budget
     
     print("\n  Running optimization...")
-    
     for i in range(iterations):
         neighbor = copy.deepcopy(current_portfolio)
         neighbor_qty = current_quantities.copy()
         
         idx1, idx2 = random.sample(range(portfolio_size), 2)
-        cat1 = neighbor[idx1][COL_CATEGORY]
-        cat2 = neighbor[idx2][COL_CATEGORY]
+        cat1, cat2 = neighbor[idx1][COL_CATEGORY], neighbor[idx2][COL_CATEGORY]
         
         candidates1 = [s for s in list_data if s[COL_CATEGORY] == cat1 and s not in neighbor]
         candidates2 = [s for s in list_data if s[COL_CATEGORY] == cat2 and s not in neighbor]
@@ -979,50 +931,34 @@ def run_baseline_hill_climbing(stocks_df, portfolio_size, large_cap_count, mid_c
         if not candidates1 or not candidates2:
             continue
         
-        new_stock1 = random.choice(candidates1)
-        new_stock2 = random.choice(candidates2)
-        
+        new_stock1, new_stock2 = random.choice(candidates1), random.choice(candidates2)
         qty1, _, success1 = calculate_budget(new_stock1[COL_PRICE], new_stock1[COL_LOWER], new_stock1[COL_UPPER])
         qty2, _, success2 = calculate_budget(new_stock2[COL_PRICE], new_stock2[COL_LOWER], new_stock2[COL_UPPER])
         
         if not success1 or not success2:
             continue
         
-        neighbor[idx1] = new_stock1
-        neighbor[idx2] = new_stock2
-        neighbor_qty[idx1] = qty1
-        neighbor_qty[idx2] = qty2
-        
+        neighbor[idx1], neighbor[idx2] = new_stock1, new_stock2
+        neighbor_qty[idx1], neighbor_qty[idx2] = qty1, qty2
         neighbor_obj, neighbor_budget = calculate_objective(neighbor, neighbor_qty)
         
         if neighbor_budget <= total_budget and neighbor_obj > current_obj:
-            current_portfolio = neighbor
-            current_quantities = neighbor_qty
-            current_obj = neighbor_obj
-            current_budget = neighbor_budget
+            current_portfolio, current_quantities = neighbor, neighbor_qty
+            current_obj, current_budget = neighbor_obj, neighbor_budget
             
             if current_obj > best_obj:
                 best_portfolio = copy.deepcopy(current_portfolio)
                 best_quantities = current_quantities.copy()
-                best_obj = current_obj
-                best_budget = current_budget
+                best_obj, best_budget = current_obj, current_budget
         
         if i % 200 == 0:
             print(f"  Iteration {i}, Best Objective: {best_obj:.4f}")
     
-    portfolio = []
-    for i, stock in enumerate(best_portfolio):
-        portfolio.append([
-            int(stock[COL_STOCK_ID]),
-            stock[COL_SYMBOL],
-            stock[COL_NAME],
-            stock[COL_PRICE],
-            int(stock[COL_CATEGORY]),
-            best_quantities[i]
-        ])
+    portfolio = [[int(stock[COL_STOCK_ID]), stock[COL_SYMBOL], stock[COL_NAME],
+                  stock[COL_PRICE], int(stock[COL_CATEGORY]), best_quantities[i]]
+                 for i, stock in enumerate(best_portfolio)]
     
     time_taken = time.time() - start_time
-    
     print(f"\n[Baseline HC] Completed in {time_taken:.2f} seconds")
     
     return portfolio, best_obj, best_budget, time_taken
@@ -1038,12 +974,11 @@ def main():
     print("   GNN-ENHANCED STOCK PORTFOLIO OPTIMIZATION EXPERIMENTS")
     print("="*70)
     
-    # Load dataset
     print("\nLoading dataset...")
     stocks_df = pd.read_csv('Final_Input_dataset_for_DSS.csv')
     print(f"Dataset loaded: {len(stocks_df)} stocks")
     
-    # Experiment parameters (matching parent paper sample 1)
+    # Experiment parameters
     PORTFOLIO_SIZE = 10
     LARGE_CAP_COUNT = 5
     MID_CAP_COUNT = 2
@@ -1051,13 +986,12 @@ def main():
     UPPER_BUDGET_LIMIT = 0.20
     LOWER_BUDGET_LIMIT = 0.05
     
-    # Objective function weights
+    # Objective function weights (α1=0.5, α2=0.2, α3=0.25, α4=0.05)
     WEIGHT_FITNESS = 0.5
     WEIGHT_PERCENT_CHANGE = 0.2
     WEIGHT_REV_GROWTH = 0.25
     WEIGHT_NORMALIZED_BUDGET = 0.05
     
-    # Algorithm parameters
     SHLO_EPOCHS = 100
     SHLO_POP_SIZE = 50
     HC_ITERATIONS = 1000
@@ -1072,7 +1006,6 @@ def main():
     
     results = {}
     
-    # Run Baseline SHLO
     portfolio, fitness, budget, time_taken = run_baseline_shlo(
         stocks_df, PORTFOLIO_SIZE, LARGE_CAP_COUNT, MID_CAP_COUNT,
         TOTAL_BUDGET, UPPER_BUDGET_LIMIT, LOWER_BUDGET_LIMIT,
@@ -1086,7 +1019,6 @@ def main():
         'time': time_taken
     }
     
-    # Run GNN-Enhanced SHLO
     portfolio, fitness, budget, time_taken, _ = run_gnn_enhanced_shlo(
         stocks_df, PORTFOLIO_SIZE, LARGE_CAP_COUNT, MID_CAP_COUNT,
         TOTAL_BUDGET, UPPER_BUDGET_LIMIT, LOWER_BUDGET_LIMIT,
@@ -1100,7 +1032,6 @@ def main():
         'time': time_taken
     }
     
-    # Run Baseline Hill Climbing
     portfolio, fitness, budget, time_taken = run_baseline_hill_climbing(
         stocks_df, PORTFOLIO_SIZE, LARGE_CAP_COUNT, MID_CAP_COUNT,
         TOTAL_BUDGET, UPPER_BUDGET_LIMIT, LOWER_BUDGET_LIMIT,
@@ -1114,7 +1045,6 @@ def main():
         'time': time_taken
     }
     
-    # Run GNN-Enhanced Hill Climbing
     portfolio, fitness, budget, time_taken, _ = run_gnn_enhanced_hill_climbing(
         stocks_df, PORTFOLIO_SIZE, LARGE_CAP_COUNT, MID_CAP_COUNT,
         TOTAL_BUDGET, UPPER_BUDGET_LIMIT, LOWER_BUDGET_LIMIT,
@@ -1128,7 +1058,6 @@ def main():
         'time': time_taken
     }
     
-    # Generate results report
     generate_results_report(results, PORTFOLIO_SIZE, TOTAL_BUDGET, LARGE_CAP_COUNT, MID_CAP_COUNT)
     
     return results
@@ -1190,7 +1119,6 @@ stock characteristics but also their relationships within the stock universe.
             budget_pct = (data['budget_used'] / total_budget) * 100
             report += f"| **{name}** | {data['objective']:.4f} | ${data['budget_used']:,.0f} | {budget_pct:.1f}% | {data['time']:.2f} |\n"
     
-    # Calculate improvements
     baseline_shlo = results.get('Baseline SHLO', {}).get('objective', 0)
     gnn_shlo = results.get('GNN-SHLO', {}).get('objective', 0)
     baseline_hc = results.get('Baseline HC', {}).get('objective', 0)
@@ -1200,7 +1128,7 @@ stock characteristics but also their relationships within the stock universe.
     hc_improvement = ((gnn_hc - baseline_hc) / baseline_hc * 100) if baseline_hc > 0 else 0
     
     report += f"""
-### Improvement Analysis
+### Improvement
 
 | Comparison | Baseline | GNN-Enhanced | Improvement |
 |------------|----------|--------------|-------------|
@@ -1317,7 +1245,6 @@ The GNN enhancement shows mixed results in this experiment. This could be due to
 *Generated by GNN-Enhanced Portfolio Optimization System*
 """
     
-    # Save report
     with open('GNN_EXPERIMENT_RESULTS.md', 'w') as f:
         f.write(report)
     
